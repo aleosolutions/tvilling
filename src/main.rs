@@ -1,3 +1,5 @@
+mod manufacturing_components;
+
 use color_eyre::Result;
 use dotenv::dotenv;
 use futures::stream::StreamExt;
@@ -185,39 +187,49 @@ async fn main() -> Result<()> {
 
     // todo: what about the piston?
 
-    loop {
-        let mut pos = TrackPositions::Position1;
-        // wait for track to move to position 1
-        pos_1_stream.next().await;
-        info!("Track moving to position 1");
-        let msg = Message::new(
-            format!("/devices/{device_id}/events"),
-            serde_json::to_string(&pos)?,
-            QOS_1,
-        );
-
-        // todo: perhaps just kick start the process but don't await?, use a channel to sent the
-        // message to be processed by another task
-        client.publish(msg).await?;
-        loc_reached_stream.next().await;
-        info!("Position 1 reached");
-
-        pos = TrackPositions::Position15;
-        let msg = Message::new(
-            format!("/devices/{device_id}/events"),
-            serde_json::to_string(&pos)?,
-            QOS_1,
-        );
-        client.publish(msg).await?;
-    }
+    // loop {
+    //     let mut pos = TrackPositions::Position1;
+    //     // wait for track to move to position 1
+    //     pos_1_stream.next().await;
+    //     info!("Track moving to position 1");
+    //     let msg = Message::new(
+    //         format!("/devices/{device_id}/events"),
+    //         serde_json::to_string(&pos)?,
+    //         QOS_1,
+    //     );
+    //
+    //     // todo: perhaps just kick start the process but don't await?, use a channel to sent the
+    //     // message to be processed by another task
+    //     client.publish(msg).await?;
+    //     loc_reached_stream.next().await;
+    //     info!("Position 1 reached");
+    //
+    //     pos = TrackPositions::Position15;
+    //     let msg = Message::new(
+    //         format!("/devices/{device_id}/events"),
+    //         serde_json::to_string(&pos)?,
+    //         QOS_1,
+    //     );
+    //     client.publish(msg).await?;
+    // }
 
     Ok(())
 }
 
-#[derive(Serialize, Deserialize)]
-enum TrackPositions {
-    Position1,
-    // From1To15,
-    Position15,
-    // From15To1,
+#[cfg(test)]
+mod test{
+    use super::*;
+
+    #[test]
+    fn manufacturing_event_loop() {
+        let (mut tx, mut rx) = 
+
+        tokio::spawn( async move {
+           while let Some(msg) = tx. {
+
+           }
+        });
+
+    }
+
 }
