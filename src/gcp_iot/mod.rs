@@ -11,6 +11,8 @@ use std::env;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use tokio::fs;
 
+pub mod message;
+
 async fn new_password_jwt() -> String {
     let now = SystemTime::now().duration_since(UNIX_EPOCH).unwrap();
 

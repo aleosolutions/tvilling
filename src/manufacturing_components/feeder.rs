@@ -1,11 +1,10 @@
-use crate::manufacturing_components::feeder::Error::NoMoreSupply;
 use crate::utils::Iso8601Utc;
 use color_eyre::Result;
 use futures::StreamExt;
-use gpio_cdev::{AsyncLineEventHandle, Chip, EventRequestFlags, Line, LineEvent, LineRequestFlags};
+use gpio_cdev::{AsyncLineEventHandle, Chip, EventRequestFlags, Line, LineRequestFlags};
 use serde::ser::SerializeStruct;
 use serde::{Serialize, Serializer};
-use std::fmt::{Debug, Display, Formatter, Pointer};
+use std::fmt::{Debug, Display, Formatter};
 use std::time::SystemTime;
 
 pub struct Feeder {
@@ -16,8 +15,13 @@ pub struct Feeder {
 }
 
 #[derive(Debug)]
-enum Error {
+pub enum Error {
     NoMoreSupply,
+}
+
+#[derive(Debug, Serialize)]
+pub enum Event {
+    MaterialPickedUp,
 }
 
 impl Display for Error {
@@ -46,14 +50,14 @@ impl Serialize for Feeder {
 }
 
 impl Feeder {
-    fn new<S>(name: S, count: u32, chip: &mut Chip, line: u32) -> Result<Self>
+    pub fn new<S>(name: S, count: u32, chip: &mut Chip, line: u32) -> Result<Self>
     where
         S: Into<String> + Display,
     {
         let line = chip.get_line(line)?;
         let event_handle = line.async_events(
             LineRequestFlags::INPUT,
-            EventRequestFlags::RISING_EDGE,
+            EventRequestFlags::BOTH_EDGES,
             &format!("{name} consumer"),
         )?;
 
@@ -65,7 +69,7 @@ impl Feeder {
         })
     }
 
-    async fn async_next_event(self: &mut Self) -> Result<(), Error> {
+    pub async fn async_next_event(self: &mut Self) -> Result<Event, Error> {
         if self.count == 0 {
             return Err(Error::NoMoreSupply);
         }
@@ -74,7 +78,26 @@ impl Feeder {
             self.count -= 1;
         }
 
-        Ok(())
+        Ok(Event::MaterialPickedUp)
+    }
+
+    /// Returns true if the material has no materials left at the current moment
+    ///
+    /// # Note
+    /// This relies on the current event stream having nothing, meaning if you await now,
+    /// you should block. Currently I don't know ensure this since the stream doesn't provide
+    /// a non blocking way to see if it will block to read the next one
+    pub fn is_empty(&self) -> bool {
+        // if unwrap fails, then that means we have some how lost connection to the line, we can't
+        // recover
+        let request = self.event_handle.as_ref();
+
+        // similar rationale for unwrap above
+        request.get_value().unwrap() == 1
+    }
+
+    pub fn add_new_material(&mut self, new_material_count: u32) {
+        self.count += new_material_count;
     }
 }
 

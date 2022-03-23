@@ -36,7 +36,7 @@ pub struct Robot {
 }
 
 impl Robot {
-    fn new<S>(name: S, chip: &mut Chip, line: u32) -> Result<Self>
+    pub fn new<S>(name: S, chip: &mut Chip, line: u32) -> Result<Self>
     where
         S: Into<String> + Display,
     {

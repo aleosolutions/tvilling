@@ -1,6 +1,4 @@
-use crate::utils;
 use crate::utils::Iso8601Utc;
-use chrono::{DateTime, Utc};
 use color_eyre::Result;
 use gpio_cdev::{AsyncLineEventHandle, Chip, EventRequestFlags, Line, LineRequestFlags};
 use serde::ser::SerializeStruct;
@@ -54,7 +52,7 @@ trait PistonActions {
 }
 
 impl Piston {
-    fn new<S>(name: S, chip: &mut Chip, line: u32) -> Result<Self>
+    pub fn new<S>(name: S, chip: &mut Chip, line: u32) -> Result<Self>
     where
         S: Into<String> + Display,
     {

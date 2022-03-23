@@ -1,125 +1,119 @@
 mod gcp_iot;
 mod manufacturing_components;
 mod utils;
+
+use crate::gcp_iot::message::StartRequest;
 use crate::gcp_iot::GoogleIotConnect;
+use crate::manufacturing_components::feeder::{Event as FeederEvent, Feeder};
+use crate::manufacturing_components::program::{ManufacturingProgram, SimplifiedScenario2};
+use base64::{decode, URL_SAFE};
 use color_eyre::Result;
 use dotenv::dotenv;
 use futures::stream::StreamExt;
-use gpio_cdev::{Chip, EventRequestFlags, LineRequestFlags};
-use log::info;
+use gpio_cdev::Chip;
+use log::{info, log};
 use paho_mqtt::{AsyncClient, QOS_1};
 use pretty_env_logger;
 use std::env;
-use tokio::sync::mpsc::unbounded_channel;
+use tokio::sync::mpsc::{unbounded_channel, UnboundedSender};
 
-#[allow(unused_variables, unused_mut)]
 #[tokio::main]
 async fn main() -> Result<()> {
     dotenv().ok();
     pretty_env_logger::init();
     color_eyre::install()?;
 
-    let (mut tx, mut rx) = unbounded_channel::<String>();
+    // any events we wish to sent to the google cloud is sent across the channel to be processed by a
+    // dedicated task
+    let (mut tx, mut rx) = unbounded_channel();
 
-    let mut client = AsyncClient::gcp_connect().await?;
-    let mut stream = client.get_stream(100);
-
-    let device_id = env::var("DEVICE_ID").expect("Missing DEVICE_ID in environment variables");
-
-    client
-        .subscribe(format!("/devices/{device_id}/config"), QOS_1)
-        .await?;
-
-    tokio::task::spawn(async move {
-        while let Some(msg) = stream.next().await {
-            info!("{:?}", msg)
+    // a dedicated task just to process events to be sent to google cloud
+    let event_processor = tokio::task::spawn(async move {
+        while let Some(event) = rx.recv().await {
+            println!("{event:?}");
         }
     });
 
+    let mut client = AsyncClient::gcp_connect().await?;
+    let mut msg_stream = client.get_stream(100);
+
+    let device_id = env::var("DEVICE_ID").expect("Missing DEVICE_ID in environment variables");
+
+    // config used to ease development, feel free to change to any more appropriate topic names
+    let config_topic = format!("/devices/{device_id}/config");
+    client.subscribe(&config_topic, QOS_1).await?;
+
     let mut gpio_chip = Chip::new("/dev/gpiochip0")
-        .expect("Unable to gain access to /dev/gpiochip0, make sure you have rw permission to it");
+        .expect("Unable to gain access to /dev/gpiochip0, make sure you have read and write permission to it");
 
     let material_line: u32 = env::var("MATERIAL_LINE")
         .expect("Missing MATERIAL_LINE in environment variables")
         .parse()
         .expect("MATERIAL_LINE cannot be parsed as unsigned integer");
 
-    let material_line = gpio_chip
-        .get_line(material_line)
-        .expect(&format!("Cannot gain access to line {}", material_line));
-
-    // todo: make sure it's actually the rising edge
-    let mut material_stream = material_line.async_events(
-        LineRequestFlags::INPUT,
-        EventRequestFlags::RISING_EDGE,
-        "material event consumer",
-    )?;
-
-    let pos_1: u32 = env::var("POS_1")
-        .expect("POS_1 is not defined")
+    let program_controller: u32 = env::var("PROGRAM_CONTROL")
+        .expect("Missing PROGRAM_CONTROL in environment variables")
         .parse()
-        .expect("POS_1 cannot be parsed as unsigned int");
+        .expect("PROGRAM_CONTROL cannot be parsed as unsigned integer");
 
-    let pos_1 = gpio_chip.get_line(pos_1)?;
-    let mut pos_1_stream = pos_1.async_events(
-        LineRequestFlags::INPUT,
-        EventRequestFlags::RISING_EDGE,
-        "pos 1 consumer",
-    )?;
+    let mut program_controller = SimplifiedScenario2::new(&mut gpio_chip, program_controller)?;
 
-    let pos_15: u32 = env::var("POS_15")
-        .expect("POS_15 is not defined")
-        .parse()
-        .expect("POS_15 cannot be parsed as unsigned int");
+    let mut material_feeder = Feeder::new("Material feeder", 10, &mut gpio_chip, material_line)?;
 
-    let pos_15 = gpio_chip.get_line(pos_15)?;
-    let pos_15_stream = pos_15.async_events(
-        LineRequestFlags::INPUT,
-        EventRequestFlags::RISING_EDGE,
-        "pos 15 consumer",
-    )?;
+    let gcp_listener = tokio::task::spawn(async move {
+        while let Some(msg) = msg_stream.next().await {
+            let msg = msg.unwrap();
 
-    let loc_reached: u32 = env::var("LOC_REACHED")
-        .expect("LOC_REACHED not defined")
-        .parse()
-        .expect("LOC_REACHED cannot be parsed as unsigned int");
+            if msg.topic() == &config_topic {
+                // this is inefficient, only there to easy development
+                let payload_str = msg.payload_str();
+                println!("{payload_str:?}");
 
-    let loc_reached = gpio_chip.get_line(loc_reached)?;
-    let mut loc_reached_stream = loc_reached.async_events(
-        LineRequestFlags::INPUT,
-        EventRequestFlags::RISING_EDGE,
-        "loc reached consumer",
-    )?;
+                let request: StartRequest = serde_json::from_str(payload_str.as_ref()).unwrap();
 
-    // todo: what about the piston?
+                // unwrap for ease of development
+                simplified_scenario2_cycle(
+                    request.count,
+                    &mut material_feeder,
+                    &mut program_controller,
+                    &mut tx,
+                )
+                .await
+                .unwrap();
+            }
+        }
+    });
 
-    // loop {
-    //     let mut pos = TrackPositions::Position1;
-    //     // wait for track to move to position 1
-    //     pos_1_stream.next().await;
-    //     info!("Track moving to position 1");
-    //     let msg = Message::new(
-    //         format!("/devices/{device_id}/events"),
-    //         serde_json::to_string(&pos)?,
-    //         QOS_1,
-    //     );
-    //
-    //     // todo: perhaps just kick start the process but don't await?, use a channel to sent the
-    //     // message to be processed by another task
-    //     client.publish(msg).await?;
-    //     loc_reached_stream.next().await;
-    //     info!("Position 1 reached");
-    //
-    //     pos = TrackPositions::Position15;
-    //     let msg = Message::new(
-    //         format!("/devices/{device_id}/events"),
-    //         serde_json::to_string(&pos)?,
-    //         QOS_1,
-    //     );
-    //     client.publish(msg).await?;
-    // }
-
+    gcp_listener.await?;
+    event_processor.await?;
     Ok(())
+}
+
+/// Start running the simplified scenario 2 program until there are no materials left, returning the
+/// the number of materials picked up
+async fn simplified_scenario2_cycle(
+    count: u32,
+    feeder: &mut Feeder,
+    program: &mut SimplifiedScenario2,
+    tx: &mut UnboundedSender<FeederEvent>,
+) -> Result<u32> {
+    program.start()?;
+
+    for _i in 0..count {
+        assert!(!feeder.is_empty());
+        // wait for some material to be picked up and sent the event across the channel
+        let event = feeder.async_next_event().await?;
+
+        // tx should be alive, unwrap is safe
+        tx.send(event).unwrap();
+
+        // wait for the materials to be pushed
+        feeder.async_next_event().await?;
+    }
+
+    program.stop()?;
+
+    Ok(count)
 }
 
 #[cfg(test)]
